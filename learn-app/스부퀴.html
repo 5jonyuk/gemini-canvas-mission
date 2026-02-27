@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Spring Boot AI Quiz Master</title>
+    <title>스부퀴 - Spring Boot AI Quiz</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
       import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -33,7 +33,6 @@
 
       let currentUser = null;
 
-      // RULE 3: Auth Before Queries
       const initAuth = async () => {
         if (
           typeof __initial_auth_token !== "undefined" &&
@@ -47,7 +46,6 @@
 
       onAuthStateChanged(auth, (u) => {
         currentUser = u;
-        console.log(u ? `Authenticated: ${u.uid}` : "Not authenticated");
       });
 
       initAuth();
@@ -56,8 +54,9 @@
       const apiKey = "";
       let quizData = [];
       let currentQuestionIndex = 0;
-      let userAnswers = new Array(10).fill(null);
+      let userAnswers = [];
       let selectedDifficulty = "";
+      let selectedQuestionCount = 5;
 
       // UI Helpers
       window.showScreen = (screenId) => {
@@ -72,22 +71,69 @@
         ];
         screens.forEach((id) => {
           const el = document.getElementById(id);
-          if (el) el.classList.add("hidden");
+          if (el) {
+            el.classList.add("hidden");
+            el.classList.remove("lg:flex");
+          }
         });
         const target = document.getElementById(screenId);
         if (target) {
           target.classList.remove("hidden");
+          if (screenId === "quiz-screen") {
+            target.classList.add("lg:flex");
+          }
         }
         window.scrollTo(0, 0);
       };
 
-      // NEW: Reset app state without reloading page to prevent error pages
       window.resetApp = () => {
         quizData = [];
         currentQuestionIndex = 0;
-        userAnswers = new Array(10).fill(null);
+        userAnswers = [];
         selectedDifficulty = "";
         window.showScreen("start-screen");
+      };
+
+      window.setQuestionCount = (count) => {
+        selectedQuestionCount = count;
+        const buttons = document.querySelectorAll(".count-btn");
+        buttons.forEach((btn) => {
+          if (parseInt(btn.dataset.count) === count) {
+            btn.classList.add("bg-blue-600", "text-white", "border-blue-600");
+            btn.classList.remove("bg-white", "text-slate-600");
+          } else {
+            btn.classList.remove(
+              "bg-blue-600",
+              "text-white",
+              "border-blue-600",
+            );
+            btn.classList.add("bg-white", "text-slate-600");
+          }
+        });
+      };
+
+      // Modal Controls
+      window.showModal = (title, message, firstUnansweredIdx) => {
+        document.getElementById("modal-title").innerText = title;
+        document.getElementById("modal-message").innerText = message;
+        const modal = document.getElementById("alert-modal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+
+        window.currentUnansweredIdx = firstUnansweredIdx;
+      };
+
+      window.closeModal = () => {
+        const modal = document.getElementById("alert-modal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+      };
+
+      window.goToUnanswered = () => {
+        if (typeof window.currentUnansweredIdx === "number") {
+          window.jumpToQuestion(window.currentUnansweredIdx);
+        }
+        window.closeModal();
       };
 
       async function fetchWithRetry(url, options, retries = 5, delay = 1000) {
@@ -104,24 +150,28 @@
         }
       }
 
-      window.startDifficultySelection = () =>
+      window.startDifficultySelection = () => {
         window.showScreen("difficulty-screen");
+        window.setQuestionCount(5);
+      };
 
       window.fetchQuizData = async (difficulty) => {
         selectedDifficulty = difficulty;
         window.showScreen("loading-screen");
         document.getElementById("loading-text").innerText =
-          "AI가 문제를 생성 중입니다...";
+          "AI가 다양한 유형의 문제를 생성 중입니다...";
 
-        const systemPrompt = `You are a Spring Boot expert. Create 10 multiple-choice questions in Korean to test knowledge. 
+        const systemPrompt = `You are a Spring Boot expert. Create exactly ${selectedQuestionCount} questions in Korean.
             Difficulty: ${difficulty}. 
+            Include a mix of 'multiple_choice', 'short_answer' (단답형), and 'essay' (서술형) questions.
             Return ONLY a valid JSON array of objects. Each object MUST have:
+            - type: string ('multiple_choice' | 'short_answer' | 'essay')
             - question: string
-            - options: array of 4 strings
-            - answer: integer (0-3)
+            - options: array of 4 strings (only for multiple_choice, otherwise empty array)
+            - answer: string or integer (for multiple_choice, index 0-3. for short_answer, the correct term. for essay, a model answer)
             - explanation: string (in Korean)`;
 
-        const userQuery = `Generate 10 unique Spring Boot quiz questions in Korean with ${difficulty} difficulty.`;
+        const userQuery = `Generate ${selectedQuestionCount} mixed-type (MCQ, Short, Essay) Spring Boot quiz questions in Korean with ${difficulty} difficulty.`;
 
         try {
           const result = await fetchWithRetry(
@@ -139,12 +189,14 @@
                     items: {
                       type: "OBJECT",
                       properties: {
+                        type: { type: "STRING" },
                         question: { type: "STRING" },
                         options: { type: "ARRAY", items: { type: "STRING" } },
-                        answer: { type: "NUMBER" },
+                        answer: { type: "STRING" },
                         explanation: { type: "STRING" },
                       },
                       required: [
+                        "type",
                         "question",
                         "options",
                         "answer",
@@ -160,7 +212,7 @@
           const rawContent = result.candidates?.[0]?.content?.parts?.[0]?.text;
           quizData = JSON.parse(rawContent);
           currentQuestionIndex = 0;
-          userAnswers = new Array(10).fill(null);
+          userAnswers = new Array(quizData.length).fill("");
 
           window.showScreen("quiz-screen");
           window.renderQuestion();
@@ -171,28 +223,83 @@
         }
       };
 
+      window.jumpToQuestion = (index) => {
+        currentQuestionIndex = index;
+        window.renderQuestion();
+      };
+
       window.renderQuestion = () => {
+        if (!quizData[currentQuestionIndex]) return;
         const question = quizData[currentQuestionIndex];
+
+        // Navigator Update
+        const navContainer = document.getElementById("quiz-nav");
+        navContainer.innerHTML = "";
+        quizData.forEach((_, idx) => {
+          const isCurrent = idx === currentQuestionIndex;
+          const isAnswered =
+            userAnswers[idx] !== "" && userAnswers[idx] !== null;
+          const navItem = document.createElement("button");
+          navItem.onclick = () => window.jumpToQuestion(idx);
+          navItem.className = `w-10 h-10 rounded-lg font-bold flex items-center justify-center transition-all border-2 
+                    ${isCurrent ? "border-blue-600 scale-110 shadow-md" : "border-transparent"} 
+                    ${isAnswered ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-400"}`;
+          navItem.innerText = idx + 1;
+          navContainer.appendChild(navItem);
+        });
+
+        // Header/Progress
         document.getElementById("progress-text").innerText =
           `문제 ${currentQuestionIndex + 1} / ${quizData.length}`;
         document.getElementById("progress-bar").style.width =
           `${((currentQuestionIndex + 1) / quizData.length) * 100}%`;
-        document.getElementById("question-text").innerText = question.question;
+
+        // Question Text with Numbering
+        document.getElementById("question-text").innerHTML = `
+                <span class="text-blue-600 mr-2">Q${currentQuestionIndex + 1}.</span> 
+                ${question.question}
+            `;
 
         const container = document.getElementById("options-container");
         container.innerHTML = "";
 
-        question.options.forEach((option, index) => {
-          const btn = document.createElement("button");
-          const isSelected = userAnswers[currentQuestionIndex] === index;
-          btn.className = `w-full text-left p-4 rounded-xl border-2 transition-all font-medium text-slate-700 flex items-center ${isSelected ? "border-blue-500 bg-blue-50" : "border-slate-100 hover:border-blue-300 hover:bg-slate-50"}`;
-          btn.innerHTML = `<span class="w-8 h-8 rounded-full ${isSelected ? "bg-blue-500 text-white" : "bg-slate-100"} flex items-center justify-center mr-3 text-sm font-bold">${index + 1}</span> ${option}`;
-          btn.onclick = () => {
-            userAnswers[currentQuestionIndex] = index;
-            window.renderQuestion();
+        // Render Content by Type
+        if (question.type === "multiple_choice") {
+          question.options.forEach((option, index) => {
+            const btn = document.createElement("button");
+            const isSelected =
+              userAnswers[currentQuestionIndex] !== "" &&
+              parseInt(userAnswers[currentQuestionIndex]) === index;
+            btn.className = `w-full text-left p-4 rounded-xl border-2 transition-all font-medium text-slate-700 flex items-center ${isSelected ? "border-blue-500 bg-blue-50" : "border-slate-100 hover:border-blue-300 hover:bg-slate-50"}`;
+            btn.innerHTML = `<span class="w-8 h-8 rounded-full ${isSelected ? "bg-blue-500 text-white" : "bg-slate-100"} flex items-center justify-center mr-3 text-sm font-bold">${index + 1}</span> ${option}`;
+            btn.onclick = () => {
+              userAnswers[currentQuestionIndex] = index.toString();
+              window.renderQuestion();
+            };
+            container.appendChild(btn);
+          });
+        } else if (question.type === "short_answer") {
+          const input = document.createElement("input");
+          input.type = "text";
+          input.placeholder = "정답을 입력하세요...";
+          input.className =
+            "w-full p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none transition-all";
+          input.value = userAnswers[currentQuestionIndex] || "";
+          input.oninput = (e) => {
+            userAnswers[currentQuestionIndex] = e.target.value;
           };
-          container.appendChild(btn);
-        });
+          container.appendChild(input);
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.placeholder = "내용을 서술해 주세요...";
+          textarea.className =
+            "w-full p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none transition-all h-32 resize-none";
+          textarea.value = userAnswers[currentQuestionIndex] || "";
+          textarea.oninput = (e) => {
+            userAnswers[currentQuestionIndex] = e.target.value;
+          };
+          container.appendChild(textarea);
+        }
 
         document.getElementById("prev-btn").disabled =
           currentQuestionIndex === 0;
@@ -218,29 +325,60 @@
       };
 
       window.showResults = async () => {
-        const unanswered = userAnswers.indexOf(null);
-        if (unanswered !== -1) {
-          if (
-            !confirm(
-              `아직 풀지 않은 문제가 있습니다. (문제 ${unanswered + 1}) 결과를 보시겠습니까?`,
-            )
-          ) {
-            currentQuestionIndex = unanswered;
-            window.renderQuestion();
-            return;
-          }
+        const unansweredIdx = userAnswers.findIndex(
+          (a) => a === "" || a === null || a.trim() === "",
+        );
+        const answeredCount = userAnswers.filter(
+          (a) => a !== "" && a !== null && a.trim() !== "",
+        ).length;
+
+        if (answeredCount === 0) {
+          window.showModal(
+            "알림",
+            "문제를 하나도 풀지 않았습니다. 최소 한 문제 이상 답변해 주세요.",
+            0,
+          );
+          return;
         }
 
+        if (unansweredIdx !== -1) {
+          window.showModal(
+            "알림",
+            `아직 풀지 않은 문제가 있습니다. (문제 ${unansweredIdx + 1}) 계속하시겠습니까?`,
+            unansweredIdx,
+          );
+          // "결과 보기" 버튼을 모달에 추가하기 위해 로직을 분기
+          const modalAction = document.getElementById("modal-action-btn");
+          modalAction.innerText = "결과 보기";
+          modalAction.onclick = () => {
+            window.closeModal();
+            window.processResults();
+          };
+          return;
+        }
+
+        window.processResults();
+      };
+
+      window.processResults = async () => {
         window.showScreen("loading-screen");
         document.getElementById("loading-text").innerText =
-          "학습 내역을 저장하고 분석 중입니다...";
+          "학습 결과를 분석 중입니다...";
 
         let score = 0;
         quizData.forEach((q, i) => {
-          if (userAnswers[i] === q.answer) score++;
+          const uAns = (userAnswers[i] || "").toString().trim().toLowerCase();
+          const qAns = (q.answer || "").toString().trim().toLowerCase();
+
+          if (q.type === "multiple_choice") {
+            if (uAns === qAns) score++;
+          } else if (q.type === "short_answer") {
+            if (uAns === qAns) score++;
+          } else {
+            if (uAns.length > 10) score++;
+          }
         });
 
-        // RULE 3 & RULE 1: Ensure user is authenticated and use strict paths
         if (currentUser) {
           try {
             const historyRef = collection(
@@ -259,13 +397,11 @@
               userAnswers: userAnswers,
               timestamp: new Date().toISOString(),
             });
-            console.log("History saved successfully");
           } catch (e) {
-            console.error("Firestore Save Error:", e);
+            console.error(e);
           }
         }
 
-        // Display results
         window.showScreen("result-screen");
         document.getElementById("score-badge").innerText =
           `${score} / ${quizData.length} 점`;
@@ -273,29 +409,41 @@
         reviewContainer.innerHTML = "";
 
         quizData.forEach((q, i) => {
-          const isCorrect = userAnswers[i] === q.answer;
+          let isCorrect = false;
+          const uAns = (userAnswers[i] || "").trim();
+          const qAns = (q.answer || "").toString().trim();
+
+          if (q.type === "multiple_choice") isCorrect = uAns === qAns;
+          else if (q.type === "short_answer")
+            isCorrect = uAns.toLowerCase() === qAns.toLowerCase();
+          else isCorrect = uAns.length > 20;
+
           const item = document.createElement("div");
           item.className = `p-6 rounded-2xl border-l-4 ${isCorrect ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"}`;
+
+          let answerDisplay = "";
+          if (q.type === "multiple_choice") {
+            answerDisplay = `<p class="text-sm">내 답변: ${userAnswers[i] !== "" ? q.options[parseInt(userAnswers[i])] : "미응답"}</p>
+                                     <p class="text-sm font-bold text-green-700">정답: ${q.options[parseInt(q.answer)]}</p>`;
+          } else {
+            answerDisplay = `<p class="text-sm">내 답변: ${uAns || "미응답"}</p>
+                                     <p class="text-sm font-bold text-green-700">모범 답안: ${q.answer}</p>`;
+          }
+
           item.innerHTML = `
-                    <p class="font-bold text-slate-800 mb-2">${i + 1}. ${q.question}</p>
-                    <p class="text-sm ${isCorrect ? "text-green-700" : "text-red-700"}">내 답변: ${userAnswers[i] !== null ? q.options[userAnswers[i]] : "미응답"}</p>
-                    ${!isCorrect ? `<p class="text-sm text-green-700">정답: ${q.options[q.answer]}</p>` : ""}
-                    <div class="mt-2 text-xs text-slate-500 italic">해설: ${q.explanation}</div>
+                    <div class="flex justify-between items-start mb-2">
+                        <p class="font-bold text-slate-800">Q${i + 1}. ${q.question}</p>
+                    </div>
+                    ${answerDisplay}
+                    <div class="mt-3 pt-3 border-t border-slate-200 text-xs text-slate-500 italic">해설: ${q.explanation}</div>
                 `;
           reviewContainer.appendChild(item);
         });
       };
 
-      // History Logic
       window.loadHistory = async () => {
-        if (!currentUser) {
-          alert("인증 정보가 없습니다. 잠시 후 다시 시도해 주세요.");
-          return;
-        }
+        if (!currentUser) return;
         window.showScreen("loading-screen");
-        document.getElementById("loading-text").innerText =
-          "이전 학습 내역을 불러오는 중입니다...";
-
         try {
           const historyRef = collection(
             db,
@@ -340,28 +488,43 @@
           }
           window.showScreen("history-screen");
         } catch (e) {
-          console.error("Load History Error:", e);
-          alert("내역을 불러오는 중 오류가 발생했습니다.");
+          console.error(e);
           window.showScreen("start-screen");
         }
       };
 
       window.showHistoryDetail = (data) => {
         window.showScreen("history-detail-screen");
-        const dateStr = new Date(data.timestamp).toLocaleDateString();
         document.getElementById("detail-title").innerText =
-          `${data.difficulty} 복습 (${dateStr})`;
+          `${data.difficulty} 복습`;
         const container = document.getElementById("detail-content");
         container.innerHTML = "";
 
         data.quizData.forEach((q, i) => {
-          const isCorrect = data.userAnswers[i] === q.answer;
+          const uAns = (data.userAnswers[i] || "").trim();
+          const qAns = (q.answer || "").toString().trim();
+          let isCorrect =
+            q.type === "multiple_choice"
+              ? uAns === qAns
+              : uAns.toLowerCase() === qAns.toLowerCase();
+
           const item = document.createElement("div");
           item.className = `p-6 rounded-2xl border-l-4 ${isCorrect ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"} mb-4`;
+
+          let answerDisplay = "";
+          if (q.type === "multiple_choice") {
+            answerDisplay = `<p class="text-sm">내 답변: ${uAns !== "" ? q.options[parseInt(uAns)] : "미응답"}</p>
+                                     <p class="text-sm text-green-700 font-semibold">정답: ${q.options[parseInt(q.answer)]}</p>`;
+          } else {
+            answerDisplay = `<p class="text-sm">내 답변: ${uAns || "미응답"}</p>
+                                     <p class="text-sm text-green-700 font-semibold">모범 답안: ${q.answer}</p>`;
+          }
+
           item.innerHTML = `
-                    <p class="font-bold text-slate-800 mb-2">${i + 1}. ${q.question}</p>
-                    <p class="text-sm ${isCorrect ? "text-green-700" : "text-red-700"}">내 답변: ${data.userAnswers[i] !== null ? q.options[data.userAnswers[i]] : "미응답"}</p>
-                    <p class="text-sm text-green-700 font-semibold">정답: ${q.options[q.answer]}</p>
+                    <div class="flex justify-between items-start mb-2">
+                        <p class="font-bold text-slate-800">Q${i + 1}. ${q.question}</p>
+                    </div>
+                    ${answerDisplay}
                     <div class="mt-3 pt-3 border-t border-slate-200 text-sm text-slate-600"><strong>해설:</strong> ${q.explanation}</div>
                 `;
           container.appendChild(item);
@@ -394,24 +557,29 @@
           transform: rotate(360deg);
         }
       }
+      #quiz-nav button {
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      /* Modal Overlay */
+      #alert-modal {
+        background: rgba(15, 23, 42, 0.6);
+        backdrop-filter: blur(4px);
+      }
     </style>
   </head>
   <body class="min-h-screen p-4 md:p-8">
-    <div id="app" class="max-w-3xl mx-auto">
+    <div id="app" class="max-w-5xl mx-auto">
       <!-- Header -->
       <header class="text-center mb-10">
-        <h1 class="text-4xl font-bold text-slate-800 mb-2">
-          🍃 Spring Boot Quiz
-        </h1>
-        <p class="text-slate-600 italic">
-          AI가 생성하는 실시간 스프링부트 학습 퀴즈
-        </p>
+        <h1 class="text-4xl font-bold text-slate-800 mb-2">🍃 [스부퀴]</h1>
+        <p class="text-slate-600 italic">Spring Boot AI Quiz Master</p>
       </header>
 
       <!-- Start Screen -->
       <div
         id="start-screen"
-        class="glass rounded-3xl p-8 shadow-xl text-center border border-white"
+        class="max-w-3xl mx-auto glass rounded-3xl p-8 shadow-xl text-center border border-white"
       >
         <div class="mb-8">
           <div
@@ -427,7 +595,7 @@
                 stroke-linecap="round"
                 stroke-linejoin="round"
                 stroke-width="2"
-                d="M13 10V3L4 14h7v7l9-11h-7z"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
               ></path>
             </svg>
           </div>
@@ -435,7 +603,7 @@
             환영합니다!
           </h2>
           <p class="text-slate-500">
-            지식을 테스트하거나 이전 기록을 확인해 보세요.
+            다양한 유형의 Spring Boot 퀴즈로 실력을 확인하세요.
           </p>
         </div>
         <div class="space-y-4">
@@ -449,19 +617,6 @@
             onclick="loadHistory()"
             class="w-full bg-white border border-slate-200 text-slate-700 font-bold py-4 px-8 rounded-2xl hover:bg-slate-50 transition-all flex items-center justify-center"
           >
-            <svg
-              class="w-5 h-5 mr-2"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-              ></path>
-            </svg>
             학습 내역 보기
           </button>
         </div>
@@ -470,43 +625,74 @@
       <!-- Difficulty Selection Screen -->
       <div
         id="difficulty-screen"
-        class="hidden glass rounded-3xl p-8 shadow-xl text-center border border-white"
+        class="hidden max-w-3xl mx-auto glass rounded-3xl p-8 shadow-xl text-center border border-white"
       >
         <h2 class="text-2xl font-bold text-slate-800 mb-6">
-          난이도를 선택해 주세요
+          설정을 완료해 주세요
         </h2>
+        <div class="mb-8">
+          <p
+            class="text-sm font-bold text-slate-500 mb-4 text-left uppercase tracking-wider px-2"
+          >
+            문제 개수 선택
+          </p>
+          <div class="flex gap-4 justify-center">
+            <button
+              data-count="3"
+              onclick="setQuestionCount(3)"
+              class="count-btn flex-1 py-3 rounded-xl border-2 font-bold transition-all bg-white text-slate-600 border-slate-100 hover:border-blue-200"
+            >
+              3문제
+            </button>
+            <button
+              data-count="5"
+              onclick="setQuestionCount(5)"
+              class="count-btn flex-1 py-3 rounded-xl border-2 font-bold transition-all bg-blue-600 text-white border-blue-600"
+            >
+              5문제
+            </button>
+            <button
+              data-count="10"
+              onclick="setQuestionCount(10)"
+              class="count-btn flex-1 py-3 rounded-xl border-2 font-bold transition-all bg-white text-slate-600 border-slate-100 hover:border-blue-200"
+            >
+              10문제
+            </button>
+          </div>
+        </div>
+        <p
+          class="text-sm font-bold text-slate-500 mb-4 text-left uppercase tracking-wider px-2"
+        >
+          난이도 선택
+        </p>
         <div class="grid grid-cols-1 gap-4">
           <button
             onclick="fetchQuizData('쉬움')"
-            class="p-6 rounded-2xl bg-blue-50 border-2 border-blue-100 hover:border-blue-400 transition-all text-left"
+            class="p-6 rounded-2xl bg-blue-50 border-2 border-blue-100 hover:border-blue-400 transition-all text-left group"
           >
             <span class="block text-xl font-bold text-blue-700">쉬움</span>
-            <span class="text-sm text-blue-600"
-              >기본적인 어노테이션과 설정 개념</span
-            >
+            <span class="text-sm text-blue-600">기초 개념 위주의 문제</span>
           </button>
           <button
             onclick="fetchQuizData('중간')"
-            class="p-6 rounded-2xl bg-yellow-50 border-2 border-yellow-100 hover:border-yellow-400 transition-all text-left"
+            class="p-6 rounded-2xl bg-yellow-50 border-2 border-yellow-100 hover:border-yellow-400 transition-all text-left group"
           >
             <span class="block text-xl font-bold text-yellow-700">중간</span>
-            <span class="text-sm text-yellow-600"
-              >JPA 연관관계, 서비스 레이어 및 보안</span
-            >
+            <span class="text-sm text-yellow-600">실무 응용력 테스트</span>
           </button>
           <button
             onclick="fetchQuizData('어려움')"
-            class="p-6 rounded-2xl bg-red-50 border-2 border-red-100 hover:border-red-400 transition-all text-left"
+            class="p-6 rounded-2xl bg-red-50 border-2 border-red-100 hover:border-red-400 transition-all text-left group"
           >
             <span class="block text-xl font-bold text-red-700">어려움</span>
             <span class="text-sm text-red-600"
-              >MSA 패턴, 트랜잭션 튜닝 및 고급 보안</span
+              >심화 구조 분석 및 서술형 위주</span
             >
           </button>
         </div>
         <button
           onclick="resetApp()"
-          class="mt-6 text-slate-400 hover:text-slate-600 font-medium"
+          class="mt-8 text-slate-400 hover:text-slate-600 font-medium flex items-center justify-center mx-auto"
         >
           뒤로 가기
         </button>
@@ -515,7 +701,7 @@
       <!-- Loading Screen -->
       <div
         id="loading-screen"
-        class="hidden glass rounded-3xl p-12 shadow-xl text-center border border-white"
+        class="hidden max-w-3xl mx-auto glass rounded-3xl p-12 shadow-xl text-center border border-white"
       >
         <div class="flex flex-col items-center">
           <div class="loader mb-4"></div>
@@ -526,63 +712,81 @@
       </div>
 
       <!-- Quiz Screen -->
-      <div id="quiz-screen" class="hidden">
-        <div class="mb-4 flex justify-between items-center px-2">
-          <span id="progress-text" class="text-sm font-semibold text-slate-500"
-            >문제 1 / 10</span
-          >
-          <div class="h-2 w-32 bg-slate-200 rounded-full overflow-hidden">
+      <div
+        id="quiz-screen"
+        class="hidden flex-col lg:flex-row gap-8 items-start"
+      >
+        <aside class="lg:w-64 flex-shrink-0 w-full">
+          <div class="glass rounded-3xl p-6 shadow-lg border border-white">
+            <h4
+              class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4"
+            >
+              문제 목록
+            </h4>
             <div
-              id="progress-bar"
-              class="h-full bg-green-500 transition-all duration-300"
-              style="width: 10%"
+              id="quiz-nav"
+              class="grid grid-cols-5 lg:grid-cols-4 gap-3"
             ></div>
           </div>
-        </div>
-        <div
-          id="question-card"
-          class="glass rounded-3xl p-8 shadow-xl border border-white mb-6"
-        >
-          <h3
-            id="question-text"
-            class="text-xl font-bold text-slate-800 mb-6 leading-relaxed"
+        </aside>
+        <main class="flex-grow w-full">
+          <div class="mb-4 flex justify-between items-center px-2">
+            <span
+              id="progress-text"
+              class="text-sm font-semibold text-slate-500"
+              >문제 1 / 10</span
+            >
+            <div class="h-2 w-32 bg-slate-200 rounded-full overflow-hidden">
+              <div
+                id="progress-bar"
+                class="h-full bg-green-500 transition-all"
+                style="width: 10%"
+              ></div>
+            </div>
+          </div>
+          <div
+            id="question-card"
+            class="glass rounded-3xl p-8 shadow-xl border border-white mb-6"
           >
-            로딩 중...
-          </h3>
-          <div id="options-container" class="space-y-3"></div>
-        </div>
-        <div class="flex justify-between items-center gap-4">
-          <button
-            id="prev-btn"
-            onclick="goToPrevQuestion()"
-            class="flex-1 bg-white border border-slate-200 text-slate-600 font-bold py-4 rounded-2xl hover:bg-slate-50 disabled:opacity-30"
-          >
-            이전
-          </button>
-          <button
-            id="next-btn"
-            onclick="goToNextQuestion()"
-            class="flex-1 bg-slate-800 text-white font-bold py-4 rounded-2xl hover:bg-slate-900"
-          >
-            다음
-          </button>
-          <button
-            id="submit-btn"
-            onclick="showResults()"
-            class="hidden flex-1 bg-green-600 text-white font-bold py-4 rounded-2xl hover:bg-green-700 transition-all"
-          >
-            결과 확인
-          </button>
-        </div>
+            <h3
+              id="question-text"
+              class="text-xl font-bold text-slate-800 mb-6 leading-relaxed flex items-start"
+            ></h3>
+            <div id="options-container" class="space-y-3"></div>
+          </div>
+          <div class="flex justify-between items-center gap-4">
+            <button
+              id="prev-btn"
+              onclick="goToPrevQuestion()"
+              class="flex-1 bg-white border border-slate-200 text-slate-600 font-bold py-4 rounded-2xl hover:bg-slate-50 disabled:opacity-30"
+            >
+              이전
+            </button>
+            <button
+              id="next-btn"
+              onclick="goToNextQuestion()"
+              class="flex-1 bg-slate-800 text-white font-bold py-4 rounded-2xl hover:bg-slate-900"
+            >
+              다음
+            </button>
+            <button
+              id="submit-btn"
+              onclick="showResults()"
+              class="hidden flex-1 bg-green-600 text-white font-bold py-4 rounded-2xl hover:bg-green-700 transition-all"
+            >
+              결과 확인
+            </button>
+          </div>
+        </main>
       </div>
 
       <!-- Result Screen -->
       <div
         id="result-screen"
-        class="hidden glass rounded-3xl p-8 shadow-xl border border-white"
+        class="hidden max-w-3xl mx-auto glass rounded-3xl p-8 shadow-xl border border-white"
       >
         <div class="text-center mb-8">
-          <h2 class="text-3xl font-bold text-slate-800 mb-2">학습 완료!</h2>
+          <h2 class="text-3xl font-bold text-slate-800 mb-2">학습 분석 결과</h2>
           <div
             id="score-badge"
             class="inline-block px-8 py-3 bg-blue-600 text-white rounded-full font-bold text-2xl shadow-md"
@@ -591,7 +795,6 @@
           </div>
         </div>
         <div id="review-container" class="space-y-4 mb-8"></div>
-        <!-- Modified button: Uses resetApp instead of location.reload -->
         <button
           onclick="resetApp()"
           class="w-full bg-slate-800 text-white font-bold py-5 rounded-2xl hover:bg-slate-900 transition-all shadow-lg"
@@ -601,12 +804,12 @@
       </div>
 
       <!-- History Screen -->
-      <div id="history-screen" class="hidden">
+      <div id="history-screen" class="hidden max-w-3xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <h2 class="text-2xl font-bold text-slate-800">나의 학습 내역</h2>
           <button
             onclick="resetApp()"
-            class="text-slate-500 hover:text-slate-800"
+            class="text-slate-500 hover:text-slate-800 font-bold"
           >
             닫기
           </button>
@@ -615,22 +818,71 @@
       </div>
 
       <!-- History Detail Screen -->
-      <div id="history-detail-screen" class="hidden">
+      <div id="history-detail-screen" class="hidden max-w-3xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <h2
             id="detail-title"
-            class="text-xl font-bold text-slate-800 leading-tight mr-4"
+            class="text-xl font-bold text-slate-800 leading-tight"
           >
             복습하기
           </h2>
           <button
             onclick="loadHistory()"
-            class="flex-shrink-0 text-slate-500 hover:text-slate-800 font-bold"
+            class="text-slate-500 hover:text-slate-800 font-bold"
           >
             목록으로
           </button>
         </div>
-        <div id="detail-content"></div>
+        <div id="detail-content" class="space-y-4"></div>
+      </div>
+    </div>
+
+    <!-- Alert Modal -->
+    <div
+      id="alert-modal"
+      class="fixed inset-0 z-50 hidden items-center justify-center p-4"
+    >
+      <div
+        class="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-8 text-center animate-in fade-in zoom-in duration-200"
+      >
+        <div
+          class="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4"
+        >
+          <svg
+            class="w-8 h-8 text-amber-600"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            ></path>
+          </svg>
+        </div>
+        <h3 id="modal-title" class="text-xl font-bold text-slate-800 mb-2">
+          알림
+        </h3>
+        <p id="modal-message" class="text-slate-500 mb-8 leading-relaxed">
+          아직 풀지 않은 문제가 있습니다.
+        </p>
+        <div class="flex flex-col gap-3">
+          <button
+            onclick="goToUnanswered()"
+            class="w-full bg-slate-800 text-white font-bold py-4 rounded-2xl hover:bg-slate-900 transition-all"
+          >
+            문제로 돌아가기
+          </button>
+          <button
+            id="modal-action-btn"
+            onclick="closeModal()"
+            class="w-full bg-slate-100 text-slate-600 font-bold py-4 rounded-2xl hover:bg-slate-200 transition-all"
+          >
+            닫기
+          </button>
+        </div>
       </div>
     </div>
   </body>
